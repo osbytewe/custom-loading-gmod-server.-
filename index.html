@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Z-City | Linux Boot</title>
+<style>
+* { box-sizing: border-box; }
+
+html, body {
+    margin: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: #0a0a0a;
+    color: #cfcfcf;
+    font-family: "Ubuntu Mono", "DejaVu Sans Mono", Consolas, "Courier New", monospace;
+    font-size: 15px;
+    line-height: 1.45;
+}
+
+/* CRT scanlines */
+body:after {
+    content: "";
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    pointer-events: none;
+    background: repeating-linear-gradient(to bottom, transparent 0, transparent 2px, rgba(255,255,255,0.025) 3px);
+}
+
+#screen {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    padding: 24px 32px 0 32px;
+}
+
+#log {
+    position: absolute;
+    top: 24px; left: 32px; right: 32px; bottom: 150px;
+    overflow: hidden;
+}
+
+#notice {
+    color: #ff6b5e;
+    font-size: 13px;
+    margin-bottom: 8px;
+    white-space: normal;
+}
+
+#log div {
+    white-space: pre-wrap;
+    word-wrap: break-word;
+}
+
+.ts   { color: #6b6b6b; }
+.ok   { color: #5fd16f; }
+.info { color: #e5c76b; }
+.warn { color: #ff6b5e; }
+.dim  { color: #777; }
+.hl   { color: #ffffff; }
+.red  { color: #ff5555; }
+
+.logo { color: #d70a53; }
+.ffkey { color: #d70a53; font-weight: bold; }
+.c0 { color: #2e2e2e; } .c1 { color: #cc3b3b; } .c2 { color: #5fd16f; } .c3 { color: #e5c76b; }
+.c4 { color: #4f8cff; } .c5 { color: #b565d9; } .c6 { color: #4fd1c5; } .c7 { color: #d8d8d8; }
+
+#footer {
+    position: absolute;
+    left: 32px; right: 32px; bottom: 18px;
+    height: 126px;
+    border-top: 1px solid #2a2a2a;
+    padding-top: 10px;
+}
+
+#progress { white-space: pre; color: #5fd16f; }
+#progress .pct { color: #fff; }
+#prompt  { margin-top: 4px; color: #777; white-space: nowrap; overflow: hidden; }
+#prompt .user { color: #5fd16f; }
+#prompt .path { color: #6ea8ff; }
+
+.cursor {
+    display: inline-block;
+    width: 9px;
+    height: 16px;
+    margin-left: 2px;
+    background: #5fd16f;
+    vertical-align: text-bottom;
+    -webkit-animation: blink 1s steps(2, start) infinite;
+            animation: blink 1s steps(2, start) infinite;
+}
+@-webkit-keyframes blink { to { visibility: hidden; } }
+@keyframes blink { to { visibility: hidden; } }
+
+@media (max-width: 700px) {
+    html, body { font-size: 12px; }
+    #screen { padding: 14px 14px 0 14px; }
+    #log { top: 14px; left: 14px; right: 14px; bottom: 170px; }
+    #footer { left: 14px; right: 14px; height: 146px; }
+    #notice { font-size: 11px; }
+}
+</style>
+</head>
+<body>
+<div id="screen">
+    <div id="log"></div>
+    <div id="footer">
+        <div id="notice">[ WARNING ] FAKE LINUX BOOT ANIMATION. The boot messages are purely decorative and do not represent real system activity. The progress bar is approximate and may not reflect actual Garry's Mod or Workshop loading progress.</div>
+        <div id="progress"></div>
+        <div id="prompt"><span class="user">root@zcity</span>:<span class="path">~</span># <span id="cmd">booting</span><span class="cursor"></span></div>
+    </div>
+</div>
+
+<script>
+/* ---------------- CONFIG ---------------- */
+var SERVER_NAME = "Z-City";
+var RULES = [
+    "Respect other players.",
+    "No cheating or exploiting.",
+    "No harassment or discrimination.",
+    "Do not spam voice or text chat.",
+    "Follow staff instructions.",
+    "Have fun and enjoy Z-City!"
+];
+var MAX_LINES = 150;           // old lines get dropped so the page stays light
+var DEMO = (location.protocol === "file:"); // fake loading when opened from disk
+
+/* ---------------- STATE ---------------- */
+var logEl   = document.getElementById("log");
+var progEl  = document.getElementById("progress");
+var cmdEl   = document.getElementById("cmd");
+var queue   = [];
+var running = false;
+var clock   = 0;               // fake kernel timestamp (seconds)
+var filesTotal  = 0;
+var filesNeeded = 0;
+var gotDetails  = false;
+
+/* ---------------- OUTPUT ---------------- */
+function pad(str, len) {
+    str = String(str);
+    while (str.length < len) str = " " + str;
+    return str;
+}
+
+function padRight(str, len) {
+    str = String(str);
+    while (str.length < len) str = str + " ";
+    return str;
+}
+
+function stamp() {
+    clock += Math.random() * 0.35 + 0.01;
+    return "[" + pad(clock.toFixed(6), 12) + "] ";
+}
+
+function span(cls, text) {
+    var s = document.createElement("span");
+    s.className = cls;
+    s.textContent = text;
+    return s;
+}
+
+function addLine(parts, cls) {
+    var d = document.createElement("div");
+    if (cls) d.className = cls;
+    for (var i = 0; i < parts.length; i++) d.appendChild(parts[i]);
+    logEl.appendChild(d);
+    while (logEl.childNodes.length > MAX_LINES) logEl.removeChild(logEl.firstChild);
+    logEl.scrollTop = logEl.scrollHeight;
+}
+
+function render(item) {
+    var t = item.type, x = item.text || "";
+    if (t === "ff") {
+        var parts = [span("logo", padRight(item.logo || "", 32))];
+        if (item.kind === "head") {
+            parts.push(span("ffkey", item.key));
+            parts.push(span("", "@"));
+            parts.push(span("ffkey", item.val));
+        } else if (item.kind === "sep") {
+            parts.push(span("dim", item.val));
+        } else if (item.kind === "kv") {
+            parts.push(span("ffkey", item.key));
+            parts.push(span("", ": " + item.val));
+        } else if (item.kind === "pal") {
+            for (var c = 0; c < 8; c++) parts.push(span("c" + c, "\u2588\u2588\u2588"));
+        }
+        addLine(parts);
+    } else if (t === "k") {
+        addLine([span("ts", stamp()), span("", x)]);
+    } else if (t === "ok") {
+        addLine([span("ok", "[  OK  ] "), span("", x)]);
+    } else if (t === "info") {
+        addLine([span("info", "[ INFO ] "), span("", x)]);
+    } else if (t === "warn") {
+        addLine([span("warn", "[ WARN ] "), span("", x)]);
+    } else if (t === "dl") {
+        addLine([span("ok", "[  OK  ] "), span("dim", "Fetched "), span("", x)]);
+    } else if (t === "cmd") {
+        addLine([span("ok", "root@zcity"), span("", ":"), span("info", "~"), span("", "# " + x)]);
+    } else if (t === "rule") {
+        addLine([span("info", item.n + "  "), span("", x)]);
+    } else if (t === "hl") {
+        addLine([span("hl", x)]);
+    } else if (t === "blank") {
+        addLine([span("", " ")]);
+    } else {
+        addLine([span("", x)]);
+    }
+    if (item.prompt) cmdEl.textContent = item.prompt;
+}
+
+function enqueue(type, text, delay, extra) {
+    var item = { type: type, text: text, delay: (delay === undefined ? 120 : delay) };
+    if (extra) for (var k in extra) item[k] = extra[k];
+    queue.push(item);
+    if (!running) pump();
+}
+
+function pump() {
+    running = true;
+    // if a lot of downloads are piling up, speed through them
+    var fast = queue.length > 25;
+    var item = queue.shift();
+    if (!item) { running = false; return; }
+    render(item);
+    setTimeout(pump, fast ? 8 : item.delay);
+}
+
+/* ---------------- PROGRESS ---------------- */
+function drawProgress() {
+    var width = 36, pct = 0, label = "waiting for server...";
+    if (filesTotal > 0) {
+        var done = Math.max(0, filesTotal - filesNeeded);
+        pct = Math.min(100, Math.round((done / filesTotal) * 100));
+        label = done + "/" + filesTotal + " files";
+    }
+    var filled = Math.round((pct / 100) * width);
+    var bar = "";
+    for (var i = 0; i < width; i++) bar += (i < filled ? "#" : ".");
+    progEl.innerHTML = "";
+    progEl.appendChild(span("", "["));
+    progEl.appendChild(span("ok", bar));
+    progEl.appendChild(span("", "] "));
+    progEl.appendChild(span("pct", pad(pct, 3) + "%"));
+    progEl.appendChild(span("dim", "  " + label));
+}
+
+/* ---------------- GMOD CALLBACKS ---------------- */
+function GameDetails(servername, serverurl, mapname, maxplayers, steamid, gamemode) {
+    gotDetails = true;
+    enqueue("blank", "", 0);
+    enqueue("ok", "Connected to " + servername, 150);
+    enqueue("info", "map       : " + mapname, 80);
+    enqueue("info", "gamemode  : " + gamemode, 80);
+    enqueue("info", "slots     : " + maxplayers, 80);
+    if (steamid) enqueue("info", "steamid64 : " + steamid, 80);
+    enqueue("blank", "", 0);
+}
+
+function SetFilesTotal(total) {
+    filesTotal = Number(total) || 0;
+    drawProgress();
+}
+
+function SetFilesNeeded(needed) {
+    filesNeeded = Number(needed) || 0;
+    drawProgress();
+}
+
+function DownloadingFile(fileName) {
+    if (queue.length > 60) return;       // don't flood
+    var short = String(fileName).split("?")[0];
+    if (short.length > 60) short = "..." + short.slice(-57);
+    enqueue("dl", short, 20);
+    cmdEl.textContent = "wget " + short;
+}
+
+function SetStatusChanged(status) {
+    enqueue("info", String(status), 100);
+    cmdEl.textContent = String(status).toLowerCase();
+}
+
+/* ---------------- BOOT SEQUENCE ---------------- */
+var DEBIAN_LOGO = [
+"       _,met$$$$$gg.",
+"    ,g$$$$$$$$$$$$$$$P.",
+"  ,g$$P\"     \"\"\"Y$$.\".",
+" ,$$P'              `$$$.",
+"',$$P       ,ggs.     `$$b:",
+"`d$$'     ,$P\"'   .    $$$",
+" $$P      d$'     ,    $$P",
+" $$:      $$.   -    ,d$$'",
+" $$;      Y$b._   _,d$P'",
+" Y$$.    `.`\"Y$$$$P\"'",
+" `$$b      \"-.__",
+"  `Y$$",
+"   `Y$$.",
+"     `$$b.",
+"       `Y$$b.",
+"          `\"Y$b._",
+"              `\"\"\"\""
+];
+
+// fake system info for the fastfetch block (visual only)
+var FETCH_INFO = [
+    { kind: "head", key: "root", val: "zcity" },
+    { kind: "sep",  val: "-----------" },
+    { kind: "kv", key: "OS",       val: "Debian GNU/Linux 13 (trixie) x86_64" },
+    { kind: "kv", key: "Host",     val: SERVER_NAME + " Game Server" },
+    { kind: "kv", key: "Kernel",   val: "Linux 6.9.0-amd64" },
+    { kind: "kv", key: "Uptime",   val: "3 mins" },
+    { kind: "kv", key: "Packages", val: "412 (dpkg)" },
+    { kind: "kv", key: "Shell",    val: "bash 5.2.15" },
+    { kind: "kv", key: "Terminal", val: "tty1" },
+    { kind: "kv", key: "CPU",      val: "AMD Ryzen 5 9600X (12) @ 5.40 GHz" },
+    { kind: "kv", key: "GPU",      val: "none (headless)" },
+    { kind: "kv", key: "Memory",   val: "4.2 GiB / 32.0 GiB (13%)" },
+    { kind: "kv", key: "Disk (/)", val: "48 GiB / 1.0 TiB (5%)" },
+    { kind: "kv", key: "Network",  val: "eth0 1 Gbit/s" },
+    { kind: "kv", key: "Locale",   val: "en_US.UTF-8" },
+    { kind: "none" },
+    { kind: "pal" }
+];
+
+function fastfetch() {
+    enqueue("cmd", "fastfetch", 400, { prompt: "fastfetch" });
+    var rows = Math.max(DEBIAN_LOGO.length, FETCH_INFO.length);
+    for (var i = 0; i < rows; i++) {
+        var info = FETCH_INFO[i] || { kind: "none" };
+        enqueue("ff", "", 60, {
+            logo: DEBIAN_LOGO[i] || "",
+            kind: info.kind,
+            key: info.key,
+            val: info.val
+        });
+    }
+}
+
+function boot() {
+    enqueue("warn", "This is NOT a real task. Boot messages are for show only.", 200);
+    enqueue("blank", "", 100);
+
+    var kernel = [
+        "Linux version 6.9.0-amd64 (debian-kernel@lists.debian.org) (gcc-12 12.2.0) #1 SMP PREEMPT_DYNAMIC Debian 6.9.0",
+        "Command line: BOOT_IMAGE=/boot/vmlinuz-6.9.0-amd64 root=/dev/sda1 ro quiet",
+        "BIOS-provided physical RAM map:",
+        "x86/fpu: Supporting XSAVE feature 0x001: 'x87 floating point registers'",
+        "ACPI: Core revision 20240322",
+        "NET: Registered PF_INET protocol family",
+        "EXT4-fs (sda1): mounted filesystem with ordered data mode",
+        "usb 1-1: new high-speed USB device number 2 using xhci_hcd"
+    ];
+    for (var i = 0; i < kernel.length; i++) enqueue("k", kernel[i], 70);
+
+    enqueue("blank", "", 60);
+
+    var services = [
+        "Reached target Local File Systems.",
+        "Mounted Garry's Mod content mount.",
+        "Started Network Manager.",
+        "Reached target Network is Online.",
+        "Started Workshop Content Daemon.",
+        "Loaded Z-City game modules.",
+        "Started Server Configuration Loader.",
+        "Reached target Multi-User System."
+    ];
+    for (var j = 0; j < services.length; j++) enqueue("ok", services[j], 160);
+
+    enqueue("blank", "", 100);
+    fastfetch();
+    enqueue("blank", "", 200);
+    enqueue("cmd", "cat /etc/zcity/rules.conf", 400, { prompt: "cat /etc/zcity/rules.conf" });
+    enqueue("hl", "# SERVER RULES", 120);
+    for (var r = 0; r < RULES.length; r++) enqueue("rule", RULES[r], 140, { n: "[" + (r + 1) + "]" });
+
+    enqueue("blank", "", 200);
+    enqueue("info", "System ready. Waiting for player...", 300, { prompt: "waiting for player" });
+}
+
+/* ---------------- DEMO (only when opened as a local file) ---------------- */
+function demo() {
+    setTimeout(function () {
+        GameDetails("Z-City", "", "gm_construct", 32, "76561198000000000", "zcity");
+        SetFilesTotal(40);
+        SetFilesNeeded(40);
+        var left = 40;
+        var t = setInterval(function () {
+            left--;
+            DownloadingFile("materials/zcity/file_" + (40 - left) + ".vtf");
+            SetFilesNeeded(left);
+            if (left <= 0) {
+                clearInterval(t);
+                SetStatusChanged("Sending client info...");
+                setTimeout(function () { SetStatusChanged("Starting Lua..."); }, 900);
+            }
+        }, 260);
+    }, 6000);
+}
+
+drawProgress();
+boot();
+if (DEMO) demo();
+</script>
+</body>
+</html>
